@@ -1,0 +1,38 @@
+name: Public PDF Storage Guard
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Reject protected or encrypted material
+        shell: bash
+        run: |
+          set -euo pipefail
+          if find . -type f \( -name '*.pdf.enc' -o -name '*.enc' -o -name '*.encrypted' \) -print -quit | grep -q .; then
+            echo 'PUBLIC_STORAGE_GUARD_FAIL: encrypted/protected material found'
+            exit 1
+          fi
+          if find . -type f -name '*.pdf' -path './.git/*' -prune -o -type f -name '*.pdf' -print -quit | grep -q .; then
+            while IFS= read -r -d '' f; do
+              test "$(head -c 5 "$f")" = '%PDF-' || {
+                echo "PUBLIC_STORAGE_GUARD_FAIL: invalid PDF signature: $f"
+                exit 1
+              }
+              test -s "$f"
+            done < <(find . -type f -name '*.pdf' -not -path './.git/*' -print0)
+          fi
+          echo 'PUBLIC_STORAGE_GUARD=PASS'
