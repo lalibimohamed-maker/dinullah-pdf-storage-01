@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 360
     steps:
       - name: Checkout storage repository without LFS smudge
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           lfs: false
           fetch-depth: 1
