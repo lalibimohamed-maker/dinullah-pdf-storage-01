@@ -11,6 +11,10 @@ This storage has two logical access routes:
 
 The two routes are **access states, not two PDF copies**.
 
+## Repository-owned Releases
+
+This storage repository retains its own GitHub Releases. Releases are a persistent distribution/storage mechanism for verified assets and are not removed or replaced by Releases in another storage shard. The repository's storage-release-publisher.yml workflow publishes eligible assets as Release assets.
+
 ## One-PDF-only rule
 
 - Exactly one canonical plaintext `.pdf` is retained per SHA-256.
