@@ -1,0 +1,65 @@
+name: Storage — Publish artifacts as GitHub Release assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag; defaults to storage-release-<run id>'
+        required: false
+        type: string
+      source_glob:
+        description: 'Repository-relative glob for release assets'
+        required: false
+        default: 'artifacts/**/*'
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Checkout storage repository without LFS smudge
+        uses: actions/checkout@v7
+        with:
+          lfs: false
+          fetch-depth: 1
+
+      - name: Publish existing storage assets as a repository-owned Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.release_tag }}
+          SOURCE_GLOB: ${{ inputs.source_glob }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$INPUT_TAG"
+          if [ -z "$tag" ]; then
+            tag="storage-release-${GITHUB_RUN_ID}"
+          fi
+
+          mapfile -d '' files < <(find artifacts -type f -not -name '*.enc' -not -name '*.encrypted' -print0 2>/dev/null || true)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No release assets found under artifacts/."
+            exit 0
+          fi
+
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$tag" \
+            --notes "Repository-owned storage release. Canonical assets are published from this storage shard; manifests, provenance, rights and verification remain authoritative in their governance layer."
+
+          count=0
+          for file in "${files[@]}"; do
+            [ -s "$file" ] || continue
+            if [[ "$file" == *.pdf ]]; then
+              head -c 5 "$file" | grep -qx '%PDF-'
+            fi
+            gh release upload "$tag" "$file" --repo "$GITHUB_REPOSITORY" --clobber=false
+            count=$((count+1))
+          done
+
+          echo "RELEASE_ASSETS_UPLOADED=$count"
