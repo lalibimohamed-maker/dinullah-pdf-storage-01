@@ -58,19 +58,28 @@ jobs:
           const q = JSON.parse(fs.readFileSync(
             "source-558/artifacts/quran-translation-acquisition/manifest.json", "utf8"
           ));
+          const catalog = JSON.parse(fs.readFileSync(
+            "source-558/config/quran-multisource-translation-catalog-2026-09-22.json", "utf8"
+          ));
           const i = JSON.parse(fs.readFileSync(
             "source-558/artifacts/quran-institutional-acquisition/manifest.json", "utf8"
           ));
 
-          const qLanguages = [...new Set((q.editions || []).map(x => x.language_iso_code).filter(Boolean))];
+          const catalogLanguages = [...new Set((catalog.editions || [])
+            .filter(x => x.source_id === "quranenc")
+            .map(x => x.language_iso_code)
+            .filter(Boolean))].sort();
+          const qLanguages = [...new Set((q.editions || []).map(x => x.language_iso_code).filter(Boolean))].sort();
           const iLanguages = [...new Set((i.editions || []).map(x => x.language_iso_code).filter(Boolean))];
           const languages = [...new Set([...qLanguages, ...iLanguages])].sort();
 
-          if (qLanguages.length !== 55) throw new Error(`Expected 55 QuranEnc languages, got ${qLanguages.length}`);
+          if (catalogLanguages.length !== 55) throw new Error(`Expected 55 catalogued QuranEnc languages, got ${catalogLanguages.length}`);
+          if (!catalogLanguages.every(lang => qLanguages.includes(lang))) throw new Error("One or more catalogued QuranEnc languages were not acquired by PR #558");
           if (!languages.includes("bn")) throw new Error("Institutional Bengali (bn) is missing");
           if (languages.length !== 56) throw new Error(`Expected 56 unique languages, got ${languages.length}`);
 
           const publicCandidates = (q.editions || [])
+            .filter(x => catalogLanguages.includes(x.language_iso_code))
             .filter(x => x.status === "acquired_research_only" && x.acquired?.path)
             .filter(x => x.acquired.path.endsWith(".pdf"));
 
@@ -81,10 +90,11 @@ jobs:
               schema_version: "2026-09-24",
               source_pr: 558,
               source_branch: "rechercher-quran-official-api-registry-2026-09-22",
-              quranenc_language_count: qLanguages.length,
+              quranenc_language_count: catalogLanguages.length,
+              live_quranenc_language_count: qLanguages.length,
               institutional_language_count: iLanguages.length,
               unique_language_count: languages.length,
-              languages,
+              languages: [...new Set([...catalogLanguages, ...iLanguages])].sort(),
               quranenc_pdf_count: publicCandidates.length,
               institutional_languages_held_for_rights_review: iLanguages,
               policy: {
