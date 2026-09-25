@@ -110,6 +110,7 @@ jobs:
 
       - name: Acquire official institutional editions from PR #558
         working-directory: source-558
+        continue-on-error: true
         run: node scripts/rechercher-acquire-quran-institutional.mjs
 
       - name: Build SHA-256 protected release set
