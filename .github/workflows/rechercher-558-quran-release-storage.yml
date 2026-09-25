@@ -98,9 +98,19 @@ jobs:
             echo "No protected checkpoint release exists yet; starting from source acquisition."
           fi
 
+      - name: Install PDF/DOCX validation tools
+        run: sudo apt-get update && sudo apt-get install -y qpdf poppler-utils libreoffice-writer fonts-noto-core
+
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 24
+
+      - name: Acquire all Quran-scoped sources from live PR #561 registry
+        working-directory: source-558
+        run: node scripts/rechercher-acquire-561-quran-sources.mjs
+        env:
+          QURAN_561_MAX_SOURCES: 256
+          QURAN_561_CONCURRENCY: 6
 
       - name: Acquire QuranEnc editions from PR #558
         working-directory: source-558
@@ -130,6 +140,7 @@ jobs:
           const q = readJson(path.join(sourceRoot, "artifacts/quran-translation-acquisition/manifest.json"));
           const catalog = readJson(path.join(sourceRoot, "config/quran-multisource-translation-catalog-2026-09-22.json"));
           const institutional = readJson(path.join(sourceRoot, "artifacts/quran-institutional-acquisition/manifest.json"));
+          const liveQuran = readJson(path.join(sourceRoot, "artifacts/quran-561-registry-acquisition/manifest.json"));
 
           const catalogLanguages = [...new Set((catalog.editions || [])
             .filter((x) => x.source_id === "quranenc")
@@ -176,6 +187,32 @@ jobs:
                 "source_terms_verified_pending_asset_review",
               primary_source_verification: e.primary_source_verification || "pending",
               text_integrity_status: e.text_integrity_status || "pending"
+            });
+          }
+
+          // Merge PDFs discovered through every Quran-scoped PR #561 source.
+          for (const item of (liveQuran.sources || []).flatMap(s => s.downloaded || [])) {
+            const src = path.join(sourceRoot, item.path);
+            if (!fs.existsSync(src)) throw new Error("Missing #561 acquired PDF: " + item.path);
+            const bytes = fs.readFileSync(src);
+            if (bytes.subarray(0, 5).toString("ascii") !== "%PDF-") throw new Error("Invalid #561 PDF signature: " + src);
+            const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
+            if (sha256 !== item.sha256) throw new Error("SHA-256 mismatch for #561 asset: " + item.path);
+            const sourceId = String(item.source || "unknown").replace(/[^A-Za-z0-9._-]/g, "_");
+            const base = path.basename(src).replace(/[^A-Za-z0-9._-]/g, "_");
+            const filename = sha256 + "__quran561__" + sourceId + "__" + base;
+            const dst = path.join("release-staging", filename);
+            if (!fs.existsSync(dst)) fs.copyFileSync(src, dst);
+            records.push({
+              sha256,
+              bytes: bytes.length,
+              filename,
+              source_id: sourceId,
+              source_registry_pr: 561,
+              asset_url: item.url || null,
+              rights_status: item.rights_status || "review_required",
+              acquisition: "research-only",
+              derived: item.derived === true
             });
           }
 
@@ -245,6 +282,10 @@ jobs:
             institutional_edition_count: institutional.edition_count,
             institutional_acquired_editions: institutional.acquired_editions,
             institutional_languages_held_for_rights_review: institutional.languages || [],
+            quran_561_registry_source_count: liveQuran.quran_registry_source_count,
+            quran_561_registry_sources_crawled: liveQuran.crawled_sources,
+            quran_561_pdf_candidates: liveQuran.pdf_candidates,
+            quran_561_downloaded_pdfs: liveQuran.downloaded_pdfs,
             unique_language_count_from_registries: uniqueLanguages.length,
             complete_quranenc_language_coverage:
               pdfLanguages.length === catalogLanguages.length &&
