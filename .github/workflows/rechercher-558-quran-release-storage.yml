@@ -221,7 +221,7 @@ jobs:
           const liveLanguages = [...new Set((q.editions || [])
             .map((x) => x.language_iso_code)
             .filter(Boolean))].sort();
-          const pdfLanguages = quranencLanguages;
+          const pdfLanguages = [...new Set(records.map((x) => x.language_iso_code))].sort();
           const missingCatalogPdfLanguages = catalogLanguages.filter((lang) => !pdfLanguages.includes(lang));
           const liveOnlyLanguages = liveLanguages.filter((lang) => !catalogLanguages.includes(lang));
           const missingLivePdfLanguages = liveLanguages.filter((lang) => !pdfLanguages.includes(lang));
