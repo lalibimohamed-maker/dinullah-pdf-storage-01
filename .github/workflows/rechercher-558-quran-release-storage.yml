@@ -1,4 +1,4 @@
-name: Rechercher #558 — Quran 56-language Release storage
+name: Rechercher #558 — Quran 56-language protected acquisition storage
 
 on:
   push:
@@ -6,6 +6,8 @@ on:
     paths:
       - ".github/workflows/rechercher-558-quran-release-storage.yml"
   workflow_dispatch:
+  schedule:
+    - cron: "17 */4 * * *"
 
 permissions:
   contents: write
@@ -14,10 +16,15 @@ concurrency:
   group: rechercher-558-quran-release-storage
   cancel-in-progress: false
 
+env:
+  SOURCE_REPO: lalibimohamed-maker/-dorar-hadith-api-official
+  SOURCE_BRANCH: rechercher-quran-official-api-registry-2026-09-22
+  PROTECTED_TAG: rechercher-558-quran-protected
+
 jobs:
-  acquire-and-publish:
+  acquire-and-publish-protected:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 330
     steps:
       - name: Checkout storage repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -27,10 +34,69 @@ jobs:
       - name: Checkout PR #558 source branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          repository: lalibimohamed-maker/-dorar-hadith-api-official
-          ref: rechercher-quran-official-api-registry-2026-09-22
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ env.SOURCE_BRANCH }}
           path: source-558
           persist-credentials: false
+
+      - name: Restore previous protected PDF checkpoint
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p source-558/artifacts/quran-translation-acquisition
+          rm -rf /tmp/rechercher-558-bootstrap
+          mkdir -p /tmp/rechercher-558-bootstrap
+
+          if gh release view "$PROTECTED_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Restoring previously stored QuranEnc PDFs from protected draft release."
+            gh release download "$PROTECTED_TAG"               --repo "$GITHUB_REPOSITORY"               --pattern '*.pdf'               --dir /tmp/rechercher-558-bootstrap
+
+            shopt -s nullglob
+            for pdf in /tmp/rechercher-558-bootstrap/*.pdf; do
+              filename="$(basename "$pdf" .pdf)"
+              sha="${filename%%__*}"
+              rest="${filename#*__}"
+              lang="${rest%%__*}"
+              edition="${rest#*__}"
+
+              if ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{64}$'; then
+                echo "Skipping legacy/non-hash PDF asset: $filename"
+                continue
+              fi
+              if ! printf '%s' "$lang" | grep -Eq '^[A-Za-z0-9._-]+$'; then
+                echo "Skipping unsafe language token: $lang"
+                continue
+              fi
+              if ! printf '%s' "$edition" | grep -Eq '^[A-Za-z0-9._-]+$'; then
+                echo "Skipping unsafe edition token: $edition"
+                continue
+              fi
+
+              target_dir="source-558/artifacts/quran-translation-acquisition/editions/$lang/$edition"
+              target_file="$target_dir/$edition.pdf"
+              mkdir -p "$target_dir"
+              cp "$pdf" "$target_file"
+              cat > "$target_dir/metadata.json" <<EOF
+          {
+            "source_id": "quranenc",
+            "edition_id": "$edition",
+            "language_iso_code": "$lang",
+            "corpus_write": false,
+            "ai_generated_translation": false,
+            "canonical_arabic_separate": true,
+            "status": "acquired_research_only",
+            "acquired": {
+              "path": "artifacts/quran-translation-acquisition/editions/$lang/$edition/$edition.pdf",
+              "sha256": "$sha"
+            }
+          }
+          EOF
+            done
+          else
+            echo "No protected checkpoint release exists yet; starting from source acquisition."
+          fi
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
@@ -46,7 +112,7 @@ jobs:
         working-directory: source-558
         run: node scripts/rechercher-acquire-quran-institutional.mjs
 
-      - name: Build 56-language reconciliation manifest
+      - name: Build SHA-256 protected release set
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -54,71 +120,211 @@ jobs:
           node --input-type=module <<'NODE'
           import fs from "node:fs";
           import path from "node:path";
+          import crypto from "node:crypto";
+          import { execFileSync } from "node:child_process";
 
-          const q = JSON.parse(fs.readFileSync(
-            "source-558/artifacts/quran-translation-acquisition/manifest.json", "utf8"
-          ));
-          const catalog = JSON.parse(fs.readFileSync(
-            "source-558/config/quran-multisource-translation-catalog-2026-09-22.json", "utf8"
-          ));
-          const i = JSON.parse(fs.readFileSync(
-            "source-558/artifacts/quran-institutional-acquisition/manifest.json", "utf8"
-          ));
+          const sourceRoot = "source-558";
+          const readJson = (p) => JSON.parse(fs.readFileSync(p, "utf8"));
+
+          const q = readJson(path.join(sourceRoot, "artifacts/quran-translation-acquisition/manifest.json"));
+          const catalog = readJson(path.join(sourceRoot, "config/quran-multisource-translation-catalog-2026-09-22.json"));
+          const institutional = readJson(path.join(sourceRoot, "artifacts/quran-institutional-acquisition/manifest.json"));
 
           const catalogLanguages = [...new Set((catalog.editions || [])
-            .filter(x => x.source_id === "quranenc")
-            .map(x => x.language_iso_code)
+            .filter((x) => x.source_id === "quranenc")
+            .map((x) => x.language_iso_code)
             .filter(Boolean))].sort();
-          const qLanguages = [...new Set((q.editions || []).map(x => x.language_iso_code).filter(Boolean))].sort();
-          const iLanguages = [...new Set((i.editions || []).map(x => x.language_iso_code).filter(Boolean))];
-          const languages = [...new Set([...qLanguages, ...iLanguages])].sort();
 
-          if (catalogLanguages.length !== 55) throw new Error(`Expected 55 catalogued QuranEnc languages, got ${catalogLanguages.length}`);
-          if (!catalogLanguages.every(lang => qLanguages.includes(lang))) throw new Error("One or more catalogued QuranEnc languages were not acquired by PR #558");
-          if (!languages.includes("bn")) throw new Error("Institutional Bengali (bn) is missing");
-          if (languages.length !== 56) throw new Error(`Expected 56 unique languages, got ${languages.length}`);
+          if (catalogLanguages.length !== 55) {
+            throw new Error("Expected 55 catalogued QuranEnc languages, got " + catalogLanguages.length);
+          }
 
-          const publicCandidates = (q.editions || [])
-            .filter(x => catalogLanguages.includes(x.language_iso_code))
-            .filter(x => x.status === "acquired_research_only" && x.acquired?.path)
-            .filter(x => x.acquired.path.endsWith(".pdf"));
+          const acquired = (q.editions || [])
+            .filter((x) => x.source_id === "quranenc")
+            .filter((x) => catalogLanguages.includes(x.language_iso_code))
+            .filter((x) => x.status === "acquired_research_only" && x.acquired && x.acquired.path)
+            .filter((x) => x.acquired.path.toLowerCase().endsWith(".pdf"));
 
-          fs.mkdirSync("release-staging", {recursive:true});
+          const records = [];
+          fs.rmSync("release-staging", { recursive: true, force: true });
+          fs.mkdirSync("release-staging", { recursive: true });
+
+          for (const e of acquired) {
+            const src = path.join(sourceRoot, e.acquired.path);
+            if (!fs.existsSync(src)) throw new Error("Missing acquired PDF: " + e.acquired.path);
+            const bytes = fs.readFileSync(src);
+            if (bytes.subarray(0, 5).toString("ascii") !== "%PDF-") {
+              throw new Error("Invalid PDF signature: " + src);
+            }
+
+            const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
+            const lang = String(e.language_iso_code);
+            const edition = String(e.edition_id).replace(/[^A-Za-z0-9._-]/g, "_");
+            const filename = sha256 + "__" + lang + "__" + edition + ".pdf";
+            const dst = path.join("release-staging", filename);
+            if (!fs.existsSync(dst)) fs.copyFileSync(src, dst);
+
+            records.push({
+              sha256,
+              bytes: bytes.length,
+              filename,
+              language_iso_code: lang,
+              edition_id: e.edition_id,
+              source_id: e.source_id,
+              rights_status: (e.rights_verification && e.rights_verification.status) ||
+                "source_terms_verified_pending_asset_review",
+              primary_source_verification: e.primary_source_verification || "pending",
+              text_integrity_status: e.text_integrity_status || "pending"
+            });
+          }
+
+          let existing = { schema_version: "2026-09-25", files: [] };
+          try {
+            fs.rmSync("/tmp/rechercher-558-manifest", { recursive: true, force: true });
+            fs.mkdirSync("/tmp/rechercher-558-manifest", { recursive: true });
+            execFileSync(
+              "gh",
+              ["release", "download", process.env.PROTECTED_TAG, "--repo", process.env.GITHUB_REPOSITORY,
+               "--pattern", "quran-558-sha256-manifest.json", "--dir", "/tmp/rechercher-558-manifest"],
+              { stdio: "ignore" }
+            );
+            const manifestPath = "/tmp/rechercher-558-manifest/quran-558-sha256-manifest.json";
+            if (fs.existsSync(manifestPath)) existing = readJson(manifestPath);
+          } catch {
+            // First run: no previous manifest.
+          }
+
+          const existingBySha = new Map((existing.files || []).map((x) => [x.sha256, x]));
+          const uniqueCurrent = new Map();
+
+          for (const r of records) {
+            if (!uniqueCurrent.has(r.sha256)) {
+              uniqueCurrent.set(r.sha256, r);
+            } else {
+              const prior = uniqueCurrent.get(r.sha256);
+              prior.edition_aliases = [...new Set(
+                [...(prior.edition_aliases || []), r.edition_id]
+              )].sort();
+            }
+          }
+
+          const toUpload = [];
+          for (const r of uniqueCurrent.values()) {
+            if (!existingBySha.has(r.sha256)) {
+              existingBySha.set(r.sha256, r);
+              toUpload.push(r);
+            }
+          }
+
+          const mergedFiles = [...existingBySha.values()].sort((a, b) => a.sha256.localeCompare(b.sha256));
+          const quranencLanguages = [...new Set(records.map((x) => x.language_iso_code))].sort();
+          const uniqueLanguages = [...new Set(
+            [...catalogLanguages, ...(institutional.languages || [])]
+          )].sort();
+
+          const manifest = {
+            schema_version: "2026-09-25",
+            source_pr: 558,
+            source_branch: process.env.SOURCE_BRANCH,
+            protection: "draft_release_until_rights_verified",
+            quranenc_catalog_editions: (catalog.editions || []).filter((x) => x.source_id === "quranenc").length,
+            quranenc_catalog_languages: catalogLanguages.length,
+            quranenc_acquired_catalog_editions: records.length,
+            quranenc_acquired_languages: quranencLanguages.length,
+            institutional_edition_count: institutional.edition_count,
+            institutional_acquired_editions: institutional.acquired_editions,
+            institutional_languages_held_for_rights_review: institutional.languages || [],
+            unique_language_count_from_registries: uniqueLanguages.length,
+            complete_quranenc_language_coverage:
+              quranencLanguages.length === catalogLanguages.length &&
+              catalogLanguages.every((lang) => quranencLanguages.includes(lang)),
+            unique_sha256_pdf_count: mergedFiles.length,
+            new_sha256_pdf_count_this_run: toUpload.length,
+            rights_gate: "public_release_forbidden_until_asset_level_rights_verification",
+            policy: {
+              corpus_write: false,
+              ai_generated_translation: false,
+              canonical_arabic_separate: true,
+              duplicate_physical_pdf_by_sha256_forbidden: true
+            },
+            files: mergedFiles
+          };
+
           fs.writeFileSync(
-            "release-staging/quran-558-56-language-manifest.json",
+            "release-staging/quran-558-sha256-manifest.json",
+            JSON.stringify(manifest, null, 2) + "\n"
+          );
+
+          fs.writeFileSync(
+            "release-staging/quran-558-run-status.json",
             JSON.stringify({
-              schema_version: "2026-09-24",
               source_pr: 558,
-              source_branch: "rechercher-quran-official-api-registry-2026-09-22",
-              quranenc_language_count: catalogLanguages.length,
-              live_quranenc_language_count: qLanguages.length,
-              institutional_language_count: iLanguages.length,
-              unique_language_count: languages.length,
-              languages: [...new Set([...catalogLanguages, ...iLanguages])].sort(),
-              quranenc_pdf_count: publicCandidates.length,
-              institutional_languages_held_for_rights_review: iLanguages,
-              policy: {
-                corpus_write: false,
-                ai_generated_translation: false,
-                canonical_arabic_separate: true,
-                public_release_requires_rights_verification: true
-              }
+              run_at_utc: new Date().toISOString(),
+              quranenc_catalog_languages: catalogLanguages.length,
+              quranenc_acquired_languages: quranencLanguages.length,
+              complete_quranenc_language_coverage: manifest.complete_quranenc_language_coverage,
+              new_sha256_pdf_count_this_run: toUpload.length,
+              protected_until_rights_verified: true,
+              institutional_acquired_editions: institutional.acquired_editions
             }, null, 2) + "\n"
           );
 
-          for (const e of publicCandidates) {
-            const src = path.join("source-558", e.acquired.path);
-            const lang = e.language_iso_code;
-            const edition = String(e.edition_id).replace(/[^A-Za-z0-9._-]/g, "_");
-            const dst = path.join("release-staging", lang + "__" + edition + ".pdf");
-            fs.copyFileSync(src, dst);
-          }
+          fs.writeFileSync("/tmp/rechercher-558-upload-list.json", JSON.stringify(toUpload));
+
+          console.log(JSON.stringify({
+            quranenc_catalog_languages: catalogLanguages.length,
+            quranenc_acquired_languages: quranencLanguages.length,
+            complete_quranenc_language_coverage: manifest.complete_quranenc_language_coverage,
+            total_unique_sha256: mergedFiles.length,
+            new_sha256_pdf_count_this_run: toUpload.length,
+            institutional_acquired_editions: institutional.acquired_editions
+          }, null, 2));
           NODE
 
-      - name: Create durable Release
+      - name: Create protected draft Release when absent
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag="rechercher-558-quran-$(date -u +%Y%m%d-%H%M%S)"
-          gh release create "$tag" release-staging/*             --repo "$GITHUB_REPOSITORY"             --title "Rechercher #558 — Quran translation acquisition"             --notes "Source: PR #558 branch. The reconciliation manifest records 56 unique languages (55 QuranEnc + Bengali institutional source). Only QuranEnc PDF assets are promoted here; institutional assets remain excluded from public Release storage until explicit redistribution rights are verified."
+          if ! gh release view "$PROTECTED_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$PROTECTED_TAG"               --repo "$GITHUB_REPOSITORY"               --draft               --title "Rechercher #558 — Quran research-only protected storage"               --notes "Research-only checkpoint for PR #558. Assets remain in a draft Release until per-asset rights, source provenance and integrity verification permit public redistribution. No Corpus write and no AI-generated Quran text or translation."
+          fi
+
+      - name: Upload only new SHA-256 PDFs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import { execFileSync } from "node:child_process";
+
+          const items = JSON.parse(fs.readFileSync("/tmp/rechercher-558-upload-list.json", "utf8"));
+          const files = items.map((x) => "release-staging/" + x.filename).filter((x) => fs.existsSync(x));
+
+          if (files.length > 0) {
+            execFileSync(
+              "gh",
+              ["release", "upload", process.env.PROTECTED_TAG, "--repo", process.env.GITHUB_REPOSITORY, ...files],
+              { stdio: "inherit" }
+            );
+          } else {
+            console.log("No new SHA-256 PDF assets to upload.");
+          }
+          NODE
+
+      - name: Update protected manifests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "$PROTECTED_TAG"             --repo "$GITHUB_REPOSITORY"             --clobber             release-staging/quran-558-sha256-manifest.json             release-staging/quran-558-run-status.json
+
+      - name: Validate protected draft Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          view="$(gh release view "$PROTECTED_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,tagName)"
+          echo "$view"
+          test "$(printf '%s' "$view" | jq -r '.isDraft')" = "true"
