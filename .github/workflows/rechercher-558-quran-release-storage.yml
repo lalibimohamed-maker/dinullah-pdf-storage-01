@@ -218,7 +218,13 @@ jobs:
           }
 
           const mergedFiles = [...existingBySha.values()].sort((a, b) => a.sha256.localeCompare(b.sha256));
-          const quranencLanguages = [...new Set(records.map((x) => x.language_iso_code))].sort();
+          const liveLanguages = [...new Set((q.editions || [])
+            .map((x) => x.language_iso_code)
+            .filter(Boolean))].sort();
+          const pdfLanguages = quranencLanguages;
+          const missingCatalogPdfLanguages = catalogLanguages.filter((lang) => !pdfLanguages.includes(lang));
+          const liveOnlyLanguages = liveLanguages.filter((lang) => !catalogLanguages.includes(lang));
+          const missingLivePdfLanguages = liveLanguages.filter((lang) => !pdfLanguages.includes(lang));
           const uniqueLanguages = [...new Set(
             [...catalogLanguages, ...(institutional.languages || [])]
           )].sort();
@@ -230,15 +236,19 @@ jobs:
             protection: "draft_release_until_rights_verified",
             quranenc_catalog_editions: (catalog.editions || []).filter((x) => x.source_id === "quranenc").length,
             quranenc_catalog_languages: catalogLanguages.length,
+            quranenc_live_languages: liveLanguages.length,
+            quranenc_live_only_languages: liveOnlyLanguages,
             quranenc_acquired_catalog_editions: records.length,
-            quranenc_acquired_languages: quranencLanguages.length,
+            quranenc_acquired_pdf_languages: pdfLanguages.length,
+            quranenc_missing_catalog_pdf_languages: missingCatalogPdfLanguages,
+            quranenc_missing_live_pdf_languages: missingLivePdfLanguages,
             institutional_edition_count: institutional.edition_count,
             institutional_acquired_editions: institutional.acquired_editions,
             institutional_languages_held_for_rights_review: institutional.languages || [],
             unique_language_count_from_registries: uniqueLanguages.length,
             complete_quranenc_language_coverage:
-              quranencLanguages.length === catalogLanguages.length &&
-              catalogLanguages.every((lang) => quranencLanguages.includes(lang)),
+              pdfLanguages.length === catalogLanguages.length &&
+              catalogLanguages.every((lang) => pdfLanguages.includes(lang)),
             unique_sha256_pdf_count: mergedFiles.length,
             new_sha256_pdf_count_this_run: toUpload.length,
             rights_gate: "public_release_forbidden_until_asset_level_rights_verification",
@@ -262,8 +272,13 @@ jobs:
               source_pr: 558,
               run_at_utc: new Date().toISOString(),
               quranenc_catalog_languages: catalogLanguages.length,
-              quranenc_acquired_languages: quranencLanguages.length,
+              quranenc_live_languages: liveLanguages.length,
+              quranenc_acquired_pdf_languages: pdfLanguages.length,
+              quranenc_missing_catalog_pdf_languages: missingCatalogPdfLanguages,
+              quranenc_missing_live_pdf_languages: missingLivePdfLanguages,
               complete_quranenc_language_coverage: manifest.complete_quranenc_language_coverage,
+              quranenc_acquired_pdf_edition_count: records.length,
+              total_unique_sha256: mergedFiles.length,
               new_sha256_pdf_count_this_run: toUpload.length,
               protected_until_rights_verified: true,
               institutional_acquired_editions: institutional.acquired_editions
@@ -274,7 +289,10 @@ jobs:
 
           console.log(JSON.stringify({
             quranenc_catalog_languages: catalogLanguages.length,
-            quranenc_acquired_languages: quranencLanguages.length,
+            quranenc_live_languages: liveLanguages.length,
+            quranenc_acquired_pdf_languages: pdfLanguages.length,
+            quranenc_missing_catalog_pdf_languages: missingCatalogPdfLanguages,
+            quranenc_missing_live_pdf_languages: missingLivePdfLanguages,
             complete_quranenc_language_coverage: manifest.complete_quranenc_language_coverage,
             total_unique_sha256: mergedFiles.length,
             new_sha256_pdf_count_this_run: toUpload.length,
@@ -320,6 +338,23 @@ jobs:
         run: |
           set -euo pipefail
           gh release upload "$PROTECTED_TAG"             --repo "$GITHUB_REPOSITORY"             --clobber             release-staging/quran-558-sha256-manifest.json             release-staging/quran-558-run-status.json
+
+      - name: Fail closed when the 55 catalogued QuranEnc languages are not present as PDFs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/rechercher-558-final-status
+          mkdir -p /tmp/rechercher-558-final-status
+          gh release download "$PROTECTED_TAG"             --repo "$GITHUB_REPOSITORY"             --pattern "quran-558-run-status.json"             --dir /tmp/rechercher-558-final-status
+          missing="$(jq -r '.quranenc_missing_catalog_pdf_languages | join(",")' /tmp/rechercher-558-final-status/quran-558-run-status.json)"
+          complete="$(jq -r '.complete_quranenc_language_coverage' /tmp/rechercher-558-final-status/quran-558-run-status.json)"
+          echo "complete_quranenc_language_coverage=$complete"
+          echo "missing_catalog_pdf_languages=$missing"
+          if [ "$complete" != "true" ]; then
+            echo "::error::QuranEnc PDF coverage is incomplete; the protected Release remains partial and the next scheduled run must retry missing PDF candidates."
+            exit 1
+          fi
 
       - name: Validate protected draft Release
         env:
